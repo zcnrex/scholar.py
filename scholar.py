@@ -156,6 +156,7 @@ import optparse
 import os
 import sys
 import re
+import time
 
 try:
     # Try importing for Python 3
@@ -164,6 +165,7 @@ try:
     from urllib.request import HTTPCookieProcessor, Request, build_opener
     from urllib.parse import quote, unquote
     from http.cookiejar import MozillaCookieJar
+    import lxml
 except ImportError:
     # Fallback for Python 2
     from urllib2 import Request, build_opener, HTTPCookieProcessor
@@ -210,6 +212,7 @@ class ScholarConf(object):
     VERSION = '2.9'
     LOG_LEVEL = 1
     MAX_PAGE_RESULTS = 20 # Current maximum for per-page results
+    DEFAULT_PAGE_RESULTS = 10
     SCHOLAR_SITE = 'http://scholar.google.com'
 
     # USER_AGENT = 'Mozilla/5.0 (X11; U; FreeBSD i386; en-US; rv:1.9.2.9) Gecko/20100913 Firefox/3.6.9'
@@ -356,7 +359,7 @@ class ScholarArticleParser(object):
         content as needed, and notifies the parser instance of
         resulting instances via the handle_article callback.
         """
-        self.soup = BeautifulSoup(html)
+        self.soup = BeautifulSoup(html, "lxml")
 
         # This parses any global, non-itemized attributes from the page.
         self._parse_globals()
@@ -724,6 +727,7 @@ class SearchScholarQuery(ScholarQuery):
         + '&btnG=&hl=en' \
         + '&num=%(num)s'
 
+
     def __init__(self):
         ScholarQuery.__init__(self)
         self._add_attribute_type('num_results', 'Results', 0)
@@ -737,6 +741,7 @@ class SearchScholarQuery(ScholarQuery):
         self.timeframe = [None, None]
         self.include_patents = True
         self.include_citations = True
+        self.list_citations = False
 
     def set_words(self, words):
         """Sets words that *all* must be found in the result."""
@@ -786,6 +791,12 @@ class SearchScholarQuery(ScholarQuery):
     def set_include_patents(self, yesorno):
         self.include_patents = yesorno
 
+    def set_list_citations(self, yesorno):
+        """
+        Set if explicitly list all publications citing the article
+        """
+        self.list_citations = yesorno
+
     def get_url(self):
         if self.words is None and self.words_some is None \
            and self.words_none is None and self.phrase is None \
@@ -823,6 +834,43 @@ class SearchScholarQuery(ScholarQuery):
             urlargs[key] = quote(encode(val))
 
         return self.SCHOLAR_QUERY_URL % urlargs
+
+class SearchSholarCitationQuery(ScholarQuery):
+
+    SCHOLAR_CITATIONLIST_URL = ScholarConf.SCHOLAR_SITE + '/scholar?' \
+        + 'start=%(start)s' \
+        + '&hl=en' \
+        + '&as_sdt=2005' \
+        + '&sciodt=0,5' \
+        + '&cites=%(cluster_id)s' \
+        + '&num=%(num)s' \
+        + '&scipsc='
+
+    def __init__(self, cluster_id=None):
+        ScholarQuery.__init__(self)
+        self.num_results = ScholarConf.DEFAULT_PAGE_RESULTS
+        self.start = None
+        self.cluster_id = None
+        self.set_cluster_id(cluster_id)
+
+    def set_start_num(self, start):
+        self.start = start
+
+    def set_cluster_id(self, cluster_id):
+        self.cluster_id = cluster_id
+
+    def get_url(self):
+        if self.start is None and self.cluster_id is None:
+            raise QueryArgumentError('search query needs more parameters')
+
+        urlargs = {'start': self.start or '',
+                   'cluster_id': self.cluster_id or '',
+                   'num': self.num_results or ScholarConf.DEFAULT_PAGE_RESULTS}
+
+        for key, val in urlargs.items():
+            urlargs[key] = quote(encode(val))
+
+        return self.SCHOLAR_CITATIONLIST_URL % urlargs
 
 
 class ScholarSettings(object):
@@ -862,8 +910,8 @@ class ScholarSettings(object):
         return self._is_configured
 
 
-class ScholarQuerier(object):
 
+class ScholarQuerier(object):
     """
     ScholarQuerier instances can conduct a search on Google Scholar
     with subsequent parsing of the resulting HTML content.  The
@@ -942,7 +990,7 @@ class ScholarQuerier(object):
         # Now parse the required stuff out of the form. We require the
         # "scisig" token to make the upload of our settings acceptable
         # to Google.
-        soup = BeautifulSoup(html)
+        soup = BeautifulSoup(html, "lxml")
 
         tag = soup.find(name='form', attrs={'id': 'gs_settings_form'})
         if tag is None:
@@ -1153,6 +1201,8 @@ scholar.py -c 5 -a "albert einstein" -t --none "quantum theory" --after 1970"""
                      help='Do not search, just use articles in given cluster ID')
     group.add_option('-c', '--count', type='int', default=None,
                      help='Maximum number of results')
+    group.add_option('--list-citations', action='store_true', default=False,
+                     help='List of all publications citing the article')
     parser.add_option_group(group)
 
     group = optparse.OptionGroup(parser, 'Output format',
@@ -1247,6 +1297,8 @@ scholar.py -c 5 -a "albert einstein" -t --none "quantum theory" --after 1970"""
             query.set_include_patents(False)
         if options.no_citations:
             query.set_include_citations(False)
+        if options.list_citations:
+            query.set_list_citations(True)
 
     if options.count is not None:
         options.count = min(options.count, ScholarConf.MAX_PAGE_RESULTS)
@@ -1254,14 +1306,26 @@ scholar.py -c 5 -a "albert einstein" -t --none "quantum theory" --after 1970"""
 
     querier.send_query(query)
 
-    if options.csv:
-        csv(querier)
-    elif options.csv_header:
-        csv(querier, header=True)
-    elif options.citation is not None:
-        citation_export(querier)
+    if options.list_citations:
+        cluster_id = querier.articles[0].attrs['cluster_id'][0]
+        citation_num = querier.articles[0].attrs['num_citations'][0]
+        print('Number of total citations: %d', citation_num)
+        pages = citation_num / 10 + 1
+        query = SearchSholarCitationQuery(cluster_id)
+        for i in range(0, pages):
+            time.sleep(10)
+            query.set_start_num(i)
+            querier.send_query(query)
+            txt(querier, with_globals=options.txt_globals)
     else:
-        txt(querier, with_globals=options.txt_globals)
+        if options.csv:
+            csv(querier)
+        elif options.csv_header:
+            csv(querier, header=True)
+        elif options.citation is not None:
+            citation_export(querier)
+        else:
+            txt(querier, with_globals=options.txt_globals)
 
     if options.cookie_file:
         querier.save_cookies()
