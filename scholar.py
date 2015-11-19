@@ -1154,6 +1154,15 @@ def citation_export(querier):
     for art in articles:
         print(art.as_citation() + '\n')
 
+def print_result(options, querier):
+    if options.csv:
+        csv(querier)
+    elif options.csv_header:
+        csv(querier, header=True)
+    elif options.citation is not None:
+        citation_export(querier)
+    else:
+        txt(querier, with_globals=options.txt_globals)
 
 def main():
     usage = """scholar.py [options] <query string>
@@ -1309,23 +1318,18 @@ scholar.py -c 5 -a "albert einstein" -t --none "quantum theory" --after 1970"""
     if options.list_citations:
         cluster_id = querier.articles[0].attrs['cluster_id'][0]
         citation_num = querier.articles[0].attrs['num_citations'][0]
-        print('Number of total citations: %d', citation_num)
-        pages = citation_num / 10 + 1
+        print('Cited paper information:')
+        print('=======================================')
+        print_result(options, querier)
+        print('=======================================\n')
         query = SearchSholarCitationQuery(cluster_id)
-        for i in range(0, pages):
-            time.sleep(10)
+        for i in range(0, citation_num, ScholarConf.DEFAULT_PAGE_RESULTS):
+            time.sleep(30)
             query.set_start_num(i)
             querier.send_query(query)
-            txt(querier, with_globals=options.txt_globals)
+            print_result(options, querier)
     else:
-        if options.csv:
-            csv(querier)
-        elif options.csv_header:
-            csv(querier, header=True)
-        elif options.citation is not None:
-            citation_export(querier)
-        else:
-            txt(querier, with_globals=options.txt_globals)
+        print_result(options, querier)
 
     if options.cookie_file:
         querier.save_cookies()
