@@ -157,6 +157,7 @@ import os
 import sys
 import re
 import time
+import json
 
 try:
     # Try importing for Python 3
@@ -165,7 +166,6 @@ try:
     from urllib.request import HTTPCookieProcessor, Request, build_opener
     from urllib.parse import quote, unquote
     from http.cookiejar import MozillaCookieJar
-    import lxml
 except ImportError:
     # Fallback for Python 2
     from urllib2 import Request, build_opener, HTTPCookieProcessor
@@ -181,6 +181,18 @@ except ImportError:
     except ImportError:
         print('We need BeautifulSoup, sorry...')
         sys.exit(1)
+
+try:
+    import bibtexparser
+except ImportError:
+    print('We need bibtexparser, sorry...')
+    sys.exit(1)
+
+try:
+    import lxml
+except ImportError:
+    print('We need lxml, sorry...')
+    sys.exit(1)
 
 # Support unicode in both Python 2 and 3. In Python 3, unicode is str.
 if sys.version_info[0] == 3:
@@ -1053,7 +1065,6 @@ class ScholarQuerier(object):
                                        err_msg='requesting citation data failed')
         if data is None:
             return False
-
         article.set_citation_data(data)
         return True
 
@@ -1154,15 +1165,15 @@ def citation_export(querier):
     for art in articles:
         print(art.as_citation() + '\n')
 
-def print_result(options, querier):
-    if options.csv:
-        csv(querier)
-    elif options.csv_header:
-        csv(querier, header=True)
-    elif options.citation is not None:
-        citation_export(querier)
-    else:
-        txt(querier, with_globals=options.txt_globals)
+def citation_list_export_json(querier, phrase):
+    articles = querier.articles
+    for art in articles:
+        print
+        bib_database = bibtexparser.loads(art.as_citation())
+        for bib in bib_database.entries:
+            bib['url'] = art.attrs['url'][0]
+            bib['dataset'] = phrase
+            print(json.JSONEncoder().encode(bib))
 
 def main():
     usage = """scholar.py [options] <query string>
@@ -1313,23 +1324,35 @@ scholar.py -c 5 -a "albert einstein" -t --none "quantum theory" --after 1970"""
         options.count = min(options.count, ScholarConf.MAX_PAGE_RESULTS)
         query.set_num_page_results(options.count)
 
-    querier.send_query(query)
 
     if options.list_citations:
+        settings.set_citation_format(ScholarSettings.CITFORM_BIBTEX)
+        querier.apply_settings(settings)
+        phrase = options.phrase
+        
+        querier.send_query(query)
         cluster_id = querier.articles[0].attrs['cluster_id'][0]
         citation_num = querier.articles[0].attrs['num_citations'][0]
         print('Cited paper information:')
         print('=======================================')
-        print_result(options, querier)
+        citation_list_export_json(querier, phrase)
         print('=======================================\n')
         query = SearchSholarCitationQuery(cluster_id)
         for i in range(0, citation_num, ScholarConf.DEFAULT_PAGE_RESULTS):
             time.sleep(30)
             query.set_start_num(i)
             querier.send_query(query)
-            print_result(options, querier)
+            citation_list_export_json(querier, phrase)
     else:
-        print_result(options, querier)
+        querier.send_query(query)
+        if options.csv:
+            csv(querier)
+        elif options.csv_header:
+            csv(querier, header=True)
+        elif options.citation is not None:
+            citation_export(querier)
+        else:
+            txt(querier, with_globals=options.txt_globals)
 
     if options.cookie_file:
         querier.save_cookies()
